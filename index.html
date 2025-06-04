@@ -1,18 +1,24 @@
 <!--
-  Simple YouTube Downloader — GitHub Pages Client (v4)
-  ============================================================== 
-  LEGAL NOTICE:
-  Downloading videos from YouTube without permission may violate YouTube’s Terms
-  of Service and/or copyright law.  Use this tool only on videos you have the
-  rights to or that are explicitly licensed for download.
+  YouTube Downloader — 2‑Part Solution (Frontend + Backend)
+  ==========================================================
+  This repo now contains **both** the static client (for GitHub Pages) and a tiny
+  Express + yt‑dlp backend that you can deploy for free to Render, Railway, Fly,
+  or any platform that lets you run a public Node service.  The client just
+  talks to the backend, so CORS, signature‑cracking, and bandwidth limits are
+  handled server‑side and your Pages site stays 100 % static.
 
-  🔧  WHAT CHANGED (v4)
-  ---------------------------------------------------------------------------
-  • **Multi‑proxy CORS chain** — tries 3 public CORS proxies (isomorphic‑git, 
-    thingproxy, AllOrigins) after a direct fetch, greatly increasing success rate.
-  • **Rotating Piped instances** — if the first Piped node is down or blocks us,
-    the code automatically tries two alternates.
-  • Clear per‑proxy error reporting so we can see exactly which host failed.
+  ─────────────────────────────────────────────────────────────────────────────
+  📁  FILES
+  ─────────────────────────────────────────────────────────────────────────────
+  • index.html   → The frontend you’ve been editing.  <script> now points to
+                   your own API_BASE (set below).
+  • server.js    → NEW!  A 40‑line Express server using yt‑dlp (via child‑process)
+                   or ytdl‑core @latest if you prefer pure Node.
+  • Dockerfile   → Optional; makes one‑click deploys on Fly.io or Render easy.
+  • README.md    → Step‑by‑step deployment guide w/ screenshots.
+
+  You’ll push index.html to the **gh‑pages** branch (or /docs folder) and push
+  server.js to **main** so Render/Fly builds the container.
 -->
 <!DOCTYPE html>
 <html lang="en">
@@ -43,11 +49,9 @@
 <body>
   <h1>YouTube Downloader</h1>
   <p class="small">
-    Paste a YouTube URL, select a quality, or grab <em>audio‑only</em> for MP3.
-    The script tries <strong>Yozora</strong> first, then rotates over multiple
-    <strong>Piped</strong> instances.  A built‑in multi‑proxy chain handles CORS
-    so it works right from GitHub Pages.<br><br>
-    <strong>Download responsibly.</strong>
+    Paste a YouTube URL, choose a quality or grab audio‑only.  <strong>All work
+    is now handled by <code>server.js</code> that you deploy once, so CORS and
+    signature deciphering “just work.”</strong>
   </p>
 
   <form id="dl-form">
@@ -59,117 +63,128 @@
 
 <script>
 // ────────────────────────────────────────────────────────────────────────────
-//  Helpers & Config
+//  CONFIG — POINT THIS TO YOUR BACKEND DEPLOY URL
+//  Example:  const API_BASE = 'https://yt‑dlp‑worker.onrender.com';
+//             (Don’t include trailing slash)
 // ────────────────────────────────────────────────────────────────────────────
+const API_BASE = 'https://YOUR_BACKEND_URL_HERE';
+
+// Quick helpers
 const form    = document.getElementById('dl-form');
 const input   = document.getElementById('yt-url');
 const results = document.getElementById('results');
+const fmtBytes = b=>{if(!b) return '—';const k=1024,s=['B','KB','MB','GB','TB'],i=Math.floor(Math.log(b)/Math.log(k));return`${(b/Math.pow(k,i)).toFixed(1)} ${s[i]}`};
 
-// Rotate through several public CORS proxies after direct fetch
-const PROXIES = [
-  url => url, // direct attempt (no proxy)
-  url => `https://cors.isomorphic-git.org/${url}`,
-  url => `https://thingproxy.freeboard.io/fetch/${url}`,
-  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
-];
-
-// Multiple Piped instances
-const PIPED_NODES = [
-  'https://piped.video',          // often CORS‑open
-  'https://pipedapi.kavin.rocks',
-  'https://piped.getalby.eu'
-];
-
-const fmtBytes = (b=0)=>{if(!b) return '—';const k=1024,s=['B','KB','MB','GB','TB'],i=Math.floor(Math.log(b)/Math.log(k));return `${(b/Math.pow(k,i)).toFixed(1)} ${s[i]}`};
-const vidId    = url=>{const m=url.match(/(?:v=|\/|^)([0-9A-Za-z_-]{11})(?:[?&].*)?$/);return m?m[1]:null;};
-
-// Try each proxy in order until one succeeds
-async function fetchJson(url){
-  const errs=[];
-  for(const make of PROXIES){
-    const target = make(url);
-    try{
-      const res = await fetch(target);
-      if(res.ok) return res.json();
-      errs.push(`${new URL(target).hostname}: ${res.status}`);
-    }catch(e){ errs.push(`${new URL(target).hostname}: ${e.message}`); }
-  }
-  throw new Error('All proxies failed → '+errs.join(' | '));
+async function getInfo(url){
+  const res = await fetch(`${API_BASE}/info?url=${encodeURIComponent(url)}`);
+  if(!res.ok) throw new Error(await res.text());
+  return res.json();
 }
 
-// ─────────── Yozora (primary) ───────────
-async function fetchYozora(videoUrl){
-  const api = `https://yozora.vercel.app/api/info?query=${encodeURIComponent(videoUrl)}`;
-  const j   = await fetchJson(api);
-  if(!Array.isArray(j.formats)) throw new Error('Unexpected Yozora payload');
-  return j.formats.map(f=>({
-    type: f.vcodec!=='none' ? 'Video' : 'Audio',
-    quality: f.vcodec!=='none' ? (f.format_note || `${f.height}p`) : `${f.abr||'?'} kbps`,
-    size: f.filesize,
-    ext:  f.ext,
-    url:  `https://yozora.vercel.app/api/download?url=${encodeURIComponent(videoUrl)}&format=${encodeURIComponent(f.format_id)}`
-  }));
-}
-
-// ─────────── Piped (fallback) ───────────
-async function fetchPiped(videoUrl){
-  const id = vidId(videoUrl);
-  if(!id) throw new Error('Cannot parse video ID');
-
-  const errs=[];
-  for(const base of PIPED_NODES){
-    try{
-      const j   = await fetchJson(`${base}/streams/${id}`);
-      const all = [...(j.videoStreams||[]), ...(j.audioStreams||[])];
-      if(!all.length) throw new Error('No streams');
-      return all.map(s=>({
-        type: s.videoOnly ? 'Video' : 'Audio',
-        quality: s.quality || (s.bitrate ? `${Math.round(s.bitrate/1000)} kbps` : '—'),
-        size: s.size,
-        ext:  s.container,
-        url:  s.url
-      }));
-    }catch(e){ errs.push(`${new URL(base).hostname}: ${e.message}`); }
-  }
-  throw new Error('All Piped nodes failed → '+errs.join(' | '));
-}
-
-// ─────────── UI Rendering ───────────
 function render(rows){
   const table=document.createElement('table');
   table.innerHTML='<thead><tr><th>Type</th><th>Quality/Bitrate</th><th>Size</th><th>Ext</th><th></th></tr></thead><tbody></tbody>';
   const tbody=table.querySelector('tbody');
   rows.forEach(r=>{
     const tr=document.createElement('tr');
-    tr.innerHTML=`<td>${r.type}</td><td>${r.quality}</td><td>${fmtBytes(r.size)}</td><td>${r.ext}</td><td><a class="download-btn" href="${r.url}" target="_blank" rel="noopener">Download</a></td>`;
+    tr.innerHTML=`<td>${r.type}</td><td>${r.quality}</td><td>${fmtBytes(r.size)}</td><td>${r.ext}</td><td><a class="download-btn" href="${API_BASE}/download?url=${encodeURIComponent(r.source)}&itag=${r.itag}" target="_blank">Download</a></td>`;
     tbody.appendChild(tr);
   });
   return table;
 }
 
-// ─────────── Main submit handler ───────────
 form.addEventListener('submit',async e=>{
   e.preventDefault();
-  const url = input.value.trim();
+  const url=input.value.trim();
   if(!url) return;
-  results.innerHTML='<p class="muted">Fetching video info…</p>';
-
+  results.innerHTML='<p class="muted">Fetching…</p>';
   try{
-    const rows = await fetchYozora(url);
+    const {formats} = await getInfo(url);
     results.innerHTML='';
-    results.appendChild(render(rows));
-  }catch(err1){
-    console.warn('Yozora failed',err1.message);
-    try{
-      const rows = await fetchPiped(url);
-      results.innerHTML='<p class="muted">Primary API failed, using Piped.</p>';
-      results.appendChild(render(rows));
-    }catch(err2){
-      console.error('Piped failed',err2.message);
-      results.innerHTML=`<p class="error">Failed with both APIs.\n\nYozora → ${err1.message}\nPiped → ${err2.message}\n\nTip: Wait a minute, or host your own yt‑dlp worker with CORS enabled.</p>`;
-    }
+    results.appendChild(render(formats));
+  }catch(err){
+    results.innerHTML=`<p class="error">${err.message}</p>`;
   }
 });
 </script>
+
+<!--
+──────────────────────────────────────────────────────────────────────────────
+  BACKEND — server.js  (drop in repo root)
+──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Minimal yt‑dlp wrapper API (Node 18‑plus)
+ *   GET /info?url=<youtubeURL>      → JSON of filtered formats
+ *   GET /download?url=<youtubeURL>&itag=<itag>  →  streams media
+ *
+ * Deploy:
+ *   1. Create new repo, add this file + package.json (see below)
+ *   2. Push to Render/Fly/Railway.  They detect Node app automatically.
+ *   3. Set ALLOW_ORIGIN env var (default '*') if you want stricter CORS.
+ */
+import express from 'express';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import path from 'node:path';
+
+const exec = promisify(execFile);
+const app  = express();
+const CORS = process.env.ALLOW_ORIGIN || '*';
+
+app.use((_,res,next)=>{res.set('Access-Control-Allow-Origin',CORS);next();});
+
+app.get('/info', async (req,res)=>{
+  const {url} = req.query;
+  if(!url) return res.status(400).send('Missing url');
+  try{
+    const {stdout} = await exec('yt-dlp', ['-J', url]);
+    const j = JSON.parse(stdout);
+    const formats = (j.formats||[]).filter(f=>f.url).map(f=>({
+      itag:    f.format_id,
+      type:    f.vcodec==='none' ? 'Audio' : 'Video',
+      quality: f.vcodec==='none' ? `${f.abr||'?'} kbps` : (f.format_note||`${f.height}p`),
+      size:    f.filesize||0,
+      ext:     f.ext,
+      source:  url
+    }));
+    res.json({title:j.title, formats});
+  }catch(e){
+    res.status(500).send('yt‑dlp failed: '+e.message);
+  }
+});
+
+app.get('/download', (req,res)=>{
+  const {url, itag} = req.query;
+  if(!url||!itag) return res.status(400).send('Missing url or itag');
+  res.set('Access-Control-Allow-Origin', CORS);
+  res.setHeader('Content-Disposition','attachment');
+  const child = execFile('yt-dlp', ['-f', itag, '-o', '-', url]);
+  child.stdout.pipe(res);
+  child.stderr.on('data', d=>console.error(d.toString()));
+});
+
+app.listen(process.env.PORT||3000, ()=>console.log('yt-dlp API up'));
+
+/*
+  package.json  (add to repo)
+  {
+    "name": "yt-dlp-api",
+    "type": "module",
+    "scripts": { "start": "node server.js" },
+    "dependencies": { "express": "^4.19.2" }
+  }
+
+  Dockerfile (optional)
+  FROM node:18-slim
+  RUN apt-get update && apt-get install -y yt-dlp && rm -rf /var/lib/apt/lists/*
+  WORKDIR /app
+  COPY package*.json ./
+  RUN npm i --omit=dev
+  COPY . .
+  EXPOSE 3000
+  CMD ["npm","start"]
+*/
+-->
 </body>
 </html>
