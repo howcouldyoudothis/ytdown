@@ -1,20 +1,18 @@
 <!--
-  Simple YouTube Downloader — GitHub Pages Client (v3)
+  Simple YouTube Downloader — GitHub Pages Client (v4)
   ============================================================== 
   LEGAL NOTICE:
-  Downloading content from YouTube without permission may violate YouTube’s Terms
-  of Service and/or copyright law.  This code is provided **for educational
-  purposes**.  Use it only on videos you own rights to, that are public‑domain,
-  or released under a permissive licence.  You assume all responsibility.
+  Downloading videos from YouTube without permission may violate YouTube’s Terms
+  of Service and/or copyright law.  Use this tool only on videos you have the
+  rights to or that are explicitly licensed for download.
 
-  🔧  WHAT CHANGED (v3)
+  🔧  WHAT CHANGED (v4)
   ---------------------------------------------------------------------------
-  • Added an automatic **CORS proxy** (https://corsproxy.io) fallback so GitHub
-    Pages can fetch JSON even when the target APIs omit CORS headers.
-  • The request sequence is now:
-      1) Direct fetch   →  2) CORS‑proxied fetch   →  error message
-  • Still tries **Yozora** first, then **Piped** if Yozora fails.
-  • Added verbose error messages for easier debugging.
+  • **Multi‑proxy CORS chain** — tries 3 public CORS proxies (isomorphic‑git, 
+    thingproxy, AllOrigins) after a direct fetch, greatly increasing success rate.
+  • **Rotating Piped instances** — if the first Piped node is down or blocks us,
+    the code automatically tries two alternates.
+  • Clear per‑proxy error reporting so we can see exactly which host failed.
 -->
 <!DOCTYPE html>
 <html lang="en">
@@ -23,7 +21,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>YouTube Downloader</title>
   <style>
-    :root { --accent:#2563eb; --radius:.375rem; --border:#d1d5db; --subtle:#6b7280; --bg:#f3f4f6; }
+    :root{--accent:#2563eb;--radius:.375rem;--border:#d1d5db;--subtle:#6b7280;--bg:#f3f4f6;}
     *,*::before,*::after{box-sizing:border-box;}
     body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans",sans-serif;background:var(--bg);margin:0;padding:2rem 1rem;display:flex;flex-direction:column;align-items:center;min-height:100vh;}
     h1{margin:0 0 1rem;text-align:center;}
@@ -45,9 +43,10 @@
 <body>
   <h1>YouTube Downloader</h1>
   <p class="small">
-    Paste any YouTube URL, pick a quality, or grab <em>audio‑only</em> for an MP3.
-    The app queries <strong>Yozora</strong> first, falling back to <strong>Piped</strong>.
-    A built‑in <em>CORS proxy</em> ensures requests work on GitHub Pages.<br><br>
+    Paste a YouTube URL, select a quality, or grab <em>audio‑only</em> for MP3.
+    The script tries <strong>Yozora</strong> first, then rotates over multiple
+    <strong>Piped</strong> instances.  A built‑in multi‑proxy chain handles CORS
+    so it works right from GitHub Pages.<br><br>
     <strong>Download responsibly.</strong>
   </p>
 
@@ -59,54 +58,83 @@
   <div id="results"></div>
 
 <script>
-const form     = document.getElementById('dl-form');
-const input    = document.getElementById('yt-url');
-const results  = document.getElementById('results');
-const CORS     = 'https://corsproxy.io/?'; // global CORS proxy prefix
+// ────────────────────────────────────────────────────────────────────────────
+//  Helpers & Config
+// ────────────────────────────────────────────────────────────────────────────
+const form    = document.getElementById('dl-form');
+const input   = document.getElementById('yt-url');
+const results = document.getElementById('results');
 
-// Convert bytes → human string
+// Rotate through several public CORS proxies after direct fetch
+const PROXIES = [
+  url => url, // direct attempt (no proxy)
+  url => `https://cors.isomorphic-git.org/${url}`,
+  url => `https://thingproxy.freeboard.io/fetch/${url}`,
+  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
+];
+
+// Multiple Piped instances
+const PIPED_NODES = [
+  'https://piped.video',          // often CORS‑open
+  'https://pipedapi.kavin.rocks',
+  'https://piped.getalby.eu'
+];
+
 const fmtBytes = (b=0)=>{if(!b) return '—';const k=1024,s=['B','KB','MB','GB','TB'],i=Math.floor(Math.log(b)/Math.log(k));return `${(b/Math.pow(k,i)).toFixed(1)} ${s[i]}`};
+const vidId    = url=>{const m=url.match(/(?:v=|\/|^)([0-9A-Za-z_-]{11})(?:[?&].*)?$/);return m?m[1]:null;};
 
-// Extract 11‑char YT ID
-const vidId = url=>{const m=url.match(/(?:v=|\/|^)([0-9A-Za-z_-]{11})(?:[?&].*)?$/);return m?m[1]:null;};
-
-// Generic helper → tries direct fetch then CORS‑proxied fetch
+// Try each proxy in order until one succeeds
 async function fetchJson(url){
-  try{
-    const r = await fetch(url); if(r.ok) return r.json(); throw new Error(`${r.status} ${r.statusText}`);
-  }catch(e){
-    const prox = await fetch(CORS+encodeURIComponent(url));
-    if(!prox.ok) throw new Error(`CORS proxy fail: ${prox.status}`);
-    return prox.json();
+  const errs=[];
+  for(const make of PROXIES){
+    const target = make(url);
+    try{
+      const res = await fetch(target);
+      if(res.ok) return res.json();
+      errs.push(`${new URL(target).hostname}: ${res.status}`);
+    }catch(e){ errs.push(`${new URL(target).hostname}: ${e.message}`); }
   }
+  throw new Error('All proxies failed → '+errs.join(' | '));
 }
 
+// ─────────── Yozora (primary) ───────────
 async function fetchYozora(videoUrl){
   const api = `https://yozora.vercel.app/api/info?query=${encodeURIComponent(videoUrl)}`;
-  const j = await fetchJson(api);
+  const j   = await fetchJson(api);
   if(!Array.isArray(j.formats)) throw new Error('Unexpected Yozora payload');
   return j.formats.map(f=>({
-    type: f.vcodec!=='none'? 'Video':'Audio',
-    quality: f.vcodec!=='none'? (f.format_note||`${f.height}p`): `${f.abr||'?'} kbps`,
-    size: f.filesize, ext: f.ext,
-    url:`https://yozora.vercel.app/api/download?url=${encodeURIComponent(videoUrl)}&format=${encodeURIComponent(f.format_id)}`
+    type: f.vcodec!=='none' ? 'Video' : 'Audio',
+    quality: f.vcodec!=='none' ? (f.format_note || `${f.height}p`) : `${f.abr||'?'} kbps`,
+    size: f.filesize,
+    ext:  f.ext,
+    url:  `https://yozora.vercel.app/api/download?url=${encodeURIComponent(videoUrl)}&format=${encodeURIComponent(f.format_id)}`
   }));
 }
 
+// ─────────── Piped (fallback) ───────────
 async function fetchPiped(videoUrl){
   const id = vidId(videoUrl);
   if(!id) throw new Error('Cannot parse video ID');
-  const base = 'https://pipedapi.kavin.rocks'; // swap for any instance
-  const j = await fetchJson(`${base}/streams/${id}`);
-  const all=[...(j.videoStreams||[]),...(j.audioStreams||[])];
-  if(!all.length) throw new Error('No streams in Piped payload');
-  return all.map(s=>({
-    type: s.videoOnly? 'Video':'Audio',
-    quality: s.quality || (s.bitrate? `${Math.round(s.bitrate/1000)} kbps`:'—'),
-    size: s.size, ext: s.container, url: s.url
-  }));
+
+  const errs=[];
+  for(const base of PIPED_NODES){
+    try{
+      const j   = await fetchJson(`${base}/streams/${id}`);
+      const all = [...(j.videoStreams||[]), ...(j.audioStreams||[])];
+      if(!all.length) throw new Error('No streams');
+      return all.map(s=>({
+        type: s.videoOnly ? 'Video' : 'Audio',
+        quality: s.quality || (s.bitrate ? `${Math.round(s.bitrate/1000)} kbps` : '—'),
+        size: s.size,
+        ext:  s.container,
+        url:  s.url
+      }));
+    }catch(e){ errs.push(`${new URL(base).hostname}: ${e.message}`); }
+  }
+  throw new Error('All Piped nodes failed → '+errs.join(' | '));
 }
 
+// ─────────── UI Rendering ───────────
 function render(rows){
   const table=document.createElement('table');
   table.innerHTML='<thead><tr><th>Type</th><th>Quality/Bitrate</th><th>Size</th><th>Ext</th><th></th></tr></thead><tbody></tbody>';
@@ -119,23 +147,26 @@ function render(rows){
   return table;
 }
 
+// ─────────── Main submit handler ───────────
 form.addEventListener('submit',async e=>{
   e.preventDefault();
-  const url=input.value.trim();
+  const url = input.value.trim();
   if(!url) return;
   results.innerHTML='<p class="muted">Fetching video info…</p>';
+
   try{
-    const rows=await fetchYozora(url);
-    results.innerHTML='';results.appendChild(render(rows));
+    const rows = await fetchYozora(url);
+    results.innerHTML='';
+    results.appendChild(render(rows));
   }catch(err1){
-    console.warn('Yozora failed',err1);
+    console.warn('Yozora failed',err1.message);
     try{
-      const rows=await fetchPiped(url);
+      const rows = await fetchPiped(url);
       results.innerHTML='<p class="muted">Primary API failed, using Piped.</p>';
       results.appendChild(render(rows));
     }catch(err2){
-      console.error(err2);
-      results.innerHTML=`<p class="error">Failed with both APIs. Error details:\n• ${err1.message}\n• ${err2.message}\n\nThis is usually a CORS or rate‑limit issue. Try again later or replace the API base URLs.</p>`;
+      console.error('Piped failed',err2.message);
+      results.innerHTML=`<p class="error">Failed with both APIs.\n\nYozora → ${err1.message}\nPiped → ${err2.message}\n\nTip: Wait a minute, or host your own yt‑dlp worker with CORS enabled.</p>`;
     }
   }
 });
