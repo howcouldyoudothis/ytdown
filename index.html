@@ -1,4 +1,21 @@
-<!--\n  Simple YouTube Downloader – GitHub Pages Client\n  ====================================================\n  ❗  LEGAL NOTICE  ❗\n  Downloading videos from YouTube may breach the platform’s Terms of Service and/or\n  copyright law.  This example is provided **strictly for educational use**.  Only\n  download videos you own, that are in the public‑domain, or whose licence explicitly\n  allows it.  You assume all responsibility.\n\n  HOW IT WORKS (2025‑06):\n  -----------------------------------------------------------------------------\n  1.  Primary fetch is the open‑source **Yozora** yt‑dl serverless API.\n      https://yozora.vercel.app – supports /api/info & /api/download.\n  2.  If Yozora is offline / rate‑limited, we fall back to **Piped** (pipedapi.*) which\n      returns stream info at /streams/{videoId}.\n  3.  Everything happens client‑side; no secret keys required – perfect for GitHub Pages.\n  4.  All results are rendered in the same table UI.\n\n  -----------------------------------------------------------------------------\n-->
+<!--
+  Simple YouTube Downloader — GitHub Pages Client (v3)
+  ============================================================== 
+  LEGAL NOTICE:
+  Downloading content from YouTube without permission may violate YouTube’s Terms
+  of Service and/or copyright law.  This code is provided **for educational
+  purposes**.  Use it only on videos you own rights to, that are public‑domain,
+  or released under a permissive licence.  You assume all responsibility.
+
+  🔧  WHAT CHANGED (v3)
+  ---------------------------------------------------------------------------
+  • Added an automatic **CORS proxy** (https://corsproxy.io) fallback so GitHub
+    Pages can fetch JSON even when the target APIs omit CORS headers.
+  • The request sequence is now:
+      1) Direct fetch   →  2) CORS‑proxied fetch   →  error message
+  • Still tries **Yozora** first, then **Piped** if Yozora fails.
+  • Added verbose error messages for easier debugging.
+-->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6,23 +23,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>YouTube Downloader</title>
   <style>
-    :root {
-      --accent: #2563eb;
-      --radius: .375rem;
-      --border: #d1d5db;
-      --text-subtle: #6b7280;
-      --bg: #f3f4f6;
-    }
-    * { box-sizing: border-box; }
-    body {
-      font-family: system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans",sans-serif;
-      background: var(--bg);
-      margin: 0;
-      padding: 2rem 1rem;
-      display:flex;flex-direction:column;align-items:center;min-height:100vh;
-    }
+    :root { --accent:#2563eb; --radius:.375rem; --border:#d1d5db; --subtle:#6b7280; --bg:#f3f4f6; }
+    *,*::before,*::after{box-sizing:border-box;}
+    body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans",sans-serif;background:var(--bg);margin:0;padding:2rem 1rem;display:flex;flex-direction:column;align-items:center;min-height:100vh;}
     h1{margin:0 0 1rem;text-align:center;}
-    p.small{font-size:.875rem;color:var(--text-subtle);max-width:640px;text-align:center;}
+    p.small{font-size:.9rem;color:var(--subtle);max-width:640px;text-align:center;}
     form{display:flex;gap:.5rem;width:100%;max-width:520px;margin-top:1rem;}
     input[type=url]{flex:1;padding:.6rem .8rem;font-size:1rem;border:1px solid var(--border);border-radius:var(--radius);}
     button{padding:.6rem 1rem;font-size:1rem;border:none;border-radius:var(--radius);background:var(--accent);color:#fff;cursor:pointer;transition:background .2s;}
@@ -33,13 +38,18 @@
     th{background:#f9fafb;font-weight:600;}
     tr:last-child td{border-bottom:none;}
     a.download-btn{color:var(--accent);text-decoration:none;font-weight:600;}
-    .error{color:#b91c1c;}
-    .muted{color:var(--text-subtle);font-size:.9rem;}
+    .error{color:#b91c1c;white-space:pre-wrap;}
+    .muted{color:var(--subtle);font-size:.88rem;white-space:pre-wrap;}
   </style>
 </head>
 <body>
   <h1>YouTube Downloader</h1>
-  <p class="small">Paste a YouTube URL then pick a quality or choose <em>audio‑only</em> for an MP3.  The app tries <strong>Yozora</strong> first and, if that fails, automatically falls back to the <strong>Piped</strong> public API.  <br><strong>Download responsibly.</strong></p>
+  <p class="small">
+    Paste any YouTube URL, pick a quality, or grab <em>audio‑only</em> for an MP3.
+    The app queries <strong>Yozora</strong> first, falling back to <strong>Piped</strong>.
+    A built‑in <em>CORS proxy</em> ensures requests work on GitHub Pages.<br><br>
+    <strong>Download responsibly.</strong>
+  </p>
 
   <form id="dl-form">
     <input id="yt-url" type="url" placeholder="https://www.youtube.com/watch?v=dQw4w9WgXcQ" required />
@@ -49,62 +59,61 @@
   <div id="results"></div>
 
 <script>
-const form = document.getElementById('dl-form');
-const input = document.getElementById('yt-url');
-const results = document.getElementById('results');
+const form     = document.getElementById('dl-form');
+const input    = document.getElementById('yt-url');
+const results  = document.getElementById('results');
+const CORS     = 'https://corsproxy.io/?'; // global CORS proxy prefix
 
-// Human‑readable size helper
-const formatBytes = (bytes=0)=>{
-  if(!bytes) return '—';
-  const k=1024,sizes=['B','KB','MB','GB','TB'],i=Math.floor(Math.log(bytes)/Math.log(k));
-  return `${(bytes/Math.pow(k,i)).toFixed(1)} ${sizes[i]}`;
-};
+// Convert bytes → human string
+const fmtBytes = (b=0)=>{if(!b) return '—';const k=1024,s=['B','KB','MB','GB','TB'],i=Math.floor(Math.log(b)/Math.log(k));return `${(b/Math.pow(k,i)).toFixed(1)} ${s[i]}`};
 
-// Extract YT ID (covers youtu.be & embed links)
-function extractId(url){
-  const m = url.match(/(?:v=|\/|^)([0-9A-Za-z_-]{11})(?:[?&].*)?$/);
-  return m?m[1]:null;
+// Extract 11‑char YT ID
+const vidId = url=>{const m=url.match(/(?:v=|\/|^)([0-9A-Za-z_-]{11})(?:[?&].*)?$/);return m?m[1]:null;};
+
+// Generic helper → tries direct fetch then CORS‑proxied fetch
+async function fetchJson(url){
+  try{
+    const r = await fetch(url); if(r.ok) return r.json(); throw new Error(`${r.status} ${r.statusText}`);
+  }catch(e){
+    const prox = await fetch(CORS+encodeURIComponent(url));
+    if(!prox.ok) throw new Error(`CORS proxy fail: ${prox.status}`);
+    return prox.json();
+  }
 }
 
 async function fetchYozora(videoUrl){
-  const res = await fetch(`https://yozora.vercel.app/api/info?query=${encodeURIComponent(videoUrl)}`);
-  if(!res.ok) throw new Error('Yozora API error');
-  const j = await res.json();
+  const api = `https://yozora.vercel.app/api/info?query=${encodeURIComponent(videoUrl)}`;
+  const j = await fetchJson(api);
   if(!Array.isArray(j.formats)) throw new Error('Unexpected Yozora payload');
   return j.formats.map(f=>({
-    type: f.vcodec!== 'none'? 'Video':'Audio',
-    quality: f.vcodec!== 'none'? (f.format_note || `${f.height}p`): `${f.abr||'?'} kbps`,
-    size: f.filesize,
-    ext: f.ext,
-    url: `https://yozora.vercel.app/api/download?url=${encodeURIComponent(videoUrl)}&format=${encodeURIComponent(f.format_id)}`
+    type: f.vcodec!=='none'? 'Video':'Audio',
+    quality: f.vcodec!=='none'? (f.format_note||`${f.height}p`): `${f.abr||'?'} kbps`,
+    size: f.filesize, ext: f.ext,
+    url:`https://yozora.vercel.app/api/download?url=${encodeURIComponent(videoUrl)}&format=${encodeURIComponent(f.format_id)}`
   }));
 }
 
 async function fetchPiped(videoUrl){
-  const id = extractId(videoUrl);
+  const id = vidId(videoUrl);
   if(!id) throw new Error('Cannot parse video ID');
-  const apiBase = 'https://pipedapi.kavin.rocks'; // You can swap to any public Piped instance
-  const res = await fetch(`${apiBase}/streams/${id}`);
-  if(!res.ok) throw new Error('Piped API error');
-  const j = await res.json();
-  if(!j.videoStreams && !j.audioStreams) throw new Error('Unexpected Piped payload');
+  const base = 'https://pipedapi.kavin.rocks'; // swap for any instance
+  const j = await fetchJson(`${base}/streams/${id}`);
   const all=[...(j.videoStreams||[]),...(j.audioStreams||[])];
+  if(!all.length) throw new Error('No streams in Piped payload');
   return all.map(s=>({
     type: s.videoOnly? 'Video':'Audio',
-    quality: s.quality || (s.bitrate? `${Math.round(s.bitrate/1000)} kbps`: '—'),
-    size: s.size,
-    ext: s.container,
-    url: s.url
+    quality: s.quality || (s.bitrate? `${Math.round(s.bitrate/1000)} kbps`:'—'),
+    size: s.size, ext: s.container, url: s.url
   }));
 }
 
-function renderTable(rows){
+function render(rows){
   const table=document.createElement('table');
-  table.innerHTML=`<thead><tr><th>Type</th><th>Quality/Bitrate</th><th>Size</th><th>Ext</th><th></th></tr></thead><tbody></tbody>`;
+  table.innerHTML='<thead><tr><th>Type</th><th>Quality/Bitrate</th><th>Size</th><th>Ext</th><th></th></tr></thead><tbody></tbody>';
   const tbody=table.querySelector('tbody');
   rows.forEach(r=>{
     const tr=document.createElement('tr');
-    tr.innerHTML=`<td>${r.type}</td><td>${r.quality}</td><td>${formatBytes(r.size)}</td><td>${r.ext}</td><td><a class="download-btn" href="${r.url}" target="_blank" rel="noopener">Download</a></td>`;
+    tr.innerHTML=`<td>${r.type}</td><td>${r.quality}</td><td>${fmtBytes(r.size)}</td><td>${r.ext}</td><td><a class="download-btn" href="${r.url}" target="_blank" rel="noopener">Download</a></td>`;
     tbody.appendChild(tr);
   });
   return table;
@@ -116,18 +125,17 @@ form.addEventListener('submit',async e=>{
   if(!url) return;
   results.innerHTML='<p class="muted">Fetching video info…</p>';
   try{
-    let rows = await fetchYozora(url);
-    results.innerHTML='';
-    results.appendChild(renderTable(rows));
+    const rows=await fetchYozora(url);
+    results.innerHTML='';results.appendChild(render(rows));
   }catch(err1){
-    console.warn('Yozora failed:',err1);
+    console.warn('Yozora failed',err1);
     try{
-      let rows = await fetchPiped(url);
-      results.innerHTML='<p class="muted">Primary API failed, using fallback.</p>';
-      results.appendChild(renderTable(rows));
+      const rows=await fetchPiped(url);
+      results.innerHTML='<p class="muted">Primary API failed, using Piped.</p>';
+      results.appendChild(render(rows));
     }catch(err2){
       console.error(err2);
-      results.innerHTML='<p class="error">Failed to retrieve video information from both APIs. The service might be unreachable or the URL is invalid.</p>';
+      results.innerHTML=`<p class="error">Failed with both APIs. Error details:\n• ${err1.message}\n• ${err2.message}\n\nThis is usually a CORS or rate‑limit issue. Try again later or replace the API base URLs.</p>`;
     }
   }
 });
