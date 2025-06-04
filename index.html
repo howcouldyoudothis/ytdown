@@ -1,0 +1,176 @@
+<!--\n  Simple YouTube Downloader – static client for GitHub Pages\n  ----------------------------------------------------------\n  IMPORTANT LEGAL NOTICE:\n  Downloading YouTube videos without explicit permission from the copyright holder may violate\n  YouTube’s Terms of Service and/or copyright law. Use this tool only for videos you own, are in\n  the public‑domain, or are published under a license that explicitly permits downloading.\n  All links are generated via the open yosora yt‑dl API (https://yozora.vercel.app).\n  ----------------------------------------------------------\n-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>YouTube Downloader</title>
+  <style>
+    :root {
+      --accent: #2563eb;
+      --radius: 0.375rem;
+      --border: #d1d5db;
+      --text-subtle: #6b7280;
+      --bg: #f3f4f6;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+      background: var(--bg);
+      margin: 0;
+      padding: 2rem 1rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+    }
+    h1 { margin: 0 0 1rem; text-align: center; }
+    p.small { font-size: .875rem; color: var(--text-subtle); max-width: 600px; text-align: center; }
+    form {
+      display: flex;
+      gap: .5rem;
+      width: 100%;
+      max-width: 500px;
+      margin-top: 1rem;
+    }
+    input[type="url"] {
+      flex: 1;
+      padding: .6rem .8rem;
+      font-size: 1rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    button {
+      padding: .6rem 1rem;
+      font-size: 1rem;
+      border: none;
+      border-radius: var(--radius);
+      background: var(--accent);
+      color: #fff;
+      cursor: pointer;
+      transition: background .2s;
+    }
+    button:hover { background: #1d4ed8; }
+    #results {
+      margin-top: 2rem;
+      width: 100%;
+      max-width: 700px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    th, td {
+      padding: .6rem .5rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+      font-size: .95rem;
+    }
+    th { background: #f9fafb; font-weight: 600; }
+    tr:last-child td { border-bottom: none; }
+    a.download-btn {
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 600;
+    }
+    .error { color: #b91c1c; }
+  </style>
+</head>
+<body>
+  <h1>YouTube Downloader</h1>
+  <p class="small">Paste a YouTube URL, then pick a quality or choose <em>audio‑only</em> to grab an MP3. Links are generated on‑the‑fly by the open <a href="https://yozora.vercel.app" target="_blank" rel="noopener">Yozora</a> yt‑dl API. <strong>Download responsibly.</strong></p>
+
+  <form id="dl-form">
+    <input id="yt-url" type="url" placeholder="https://www.youtube.com/watch?v=dQw4w9WgXcQ" required />
+    <button type="submit">Get Links</button>
+  </form>
+
+  <div id="results"></div>
+
+  <script>
+    const form = document.getElementById('dl-form');
+    const input = document.getElementById('yt-url');
+    const results = document.getElementById('results');
+
+    // Helper: human‑readable file‑size
+    const formatBytes = (bytes = 0) => {
+      if (!bytes) return '—';
+      const k = 1024;
+      const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+    };
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const url = input.value.trim();
+      if (!url) return;
+
+      results.innerHTML = '<p>Fetching video info…</p>';
+
+      try {
+        // Step 1: get stream info
+        const infoRes = await fetch(`https://yozora.vercel.app/api/info?query=${encodeURIComponent(url)}`);
+        if (!infoRes.ok) throw new Error('API responded with an error');
+        const data = await infoRes.json();
+
+        // Clear placeholder
+        results.innerHTML = '';
+
+        if (!Array.isArray(data?.formats) || !data.formats.length) {
+          results.innerHTML = '<p class="error">No downloadable formats found for this video.</p>';
+          return;
+        }
+
+        // Build table
+        const table = document.createElement('table');
+        table.innerHTML = `
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>Quality / Bitrate</th>
+              <th>Size</th>
+              <th>Ext</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        `;
+
+        const tbody = table.querySelector('tbody');
+
+        // Organise: prefer mp4 video + mp3 audio first
+        const sorted = data.formats.sort((a, b) => (b.filesize || 0) - (a.filesize || 0));
+
+        sorted.forEach((f) => {
+          // Skip adaptive formats without direct URL
+          if (!/^https?:\/\/.+/.test(f.url || '')) return;
+          const isVideo = f.vcodec !== 'none';
+          const tr = document.createElement('tr');
+
+          const quality = isVideo ? (f.format_note || `${f.height}p`) : `${f.abr || '?'} kbps`;
+          const dlLink = `https://yozora.vercel.app/api/download?url=${encodeURIComponent(url)}&format=${encodeURIComponent(f.format_id)}`;
+
+          tr.innerHTML = `
+            <td>${isVideo ? 'Video' : 'Audio'}</td>
+            <td>${quality}</td>
+            <td>${formatBytes(f.filesize)}</td>
+            <td>${f.ext}</td>
+            <td><a class="download-btn" href="${dlLink}" target="_blank" rel="noopener">Download</a></td>
+          `;
+          tbody.appendChild(tr);
+        });
+
+        results.appendChild(table);
+      } catch (err) {
+        console.error(err);
+        results.innerHTML = '<p class="error">Failed to retrieve video information. It may be blocked or the API is unreachable.</p>';
+      }
+    });
+  </script>
+</body>
+</html>
