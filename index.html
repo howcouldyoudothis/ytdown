@@ -1,4 +1,4 @@
-<!--\n  Simple YouTube Downloader – static client for GitHub Pages\n  ----------------------------------------------------------\n  IMPORTANT LEGAL NOTICE:\n  Downloading YouTube videos without explicit permission from the copyright holder may violate\n  YouTube’s Terms of Service and/or copyright law. Use this tool only for videos you own, are in\n  the public‑domain, or are published under a license that explicitly permits downloading.\n  All links are generated via the open yosora yt‑dl API (https://yozora.vercel.app).\n  ----------------------------------------------------------\n-->
+<!--\n  Simple YouTube Downloader – GitHub Pages Client\n  ====================================================\n  ❗  LEGAL NOTICE  ❗\n  Downloading videos from YouTube may breach the platform’s Terms of Service and/or\n  copyright law.  This example is provided **strictly for educational use**.  Only\n  download videos you own, that are in the public‑domain, or whose licence explicitly\n  allows it.  You assume all responsibility.\n\n  HOW IT WORKS (2025‑06):\n  -----------------------------------------------------------------------------\n  1.  Primary fetch is the open‑source **Yozora** yt‑dl serverless API.\n      https://yozora.vercel.app – supports /api/info & /api/download.\n  2.  If Yozora is offline / rate‑limited, we fall back to **Piped** (pipedapi.*) which\n      returns stream info at /streams/{videoId}.\n  3.  Everything happens client‑side; no secret keys required – perfect for GitHub Pages.\n  4.  All results are rendered in the same table UI.\n\n  -----------------------------------------------------------------------------\n-->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -8,81 +8,38 @@
   <style>
     :root {
       --accent: #2563eb;
-      --radius: 0.375rem;
+      --radius: .375rem;
       --border: #d1d5db;
       --text-subtle: #6b7280;
       --bg: #f3f4f6;
     }
     * { box-sizing: border-box; }
     body {
-      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+      font-family: system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans",sans-serif;
       background: var(--bg);
       margin: 0;
       padding: 2rem 1rem;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      min-height: 100vh;
+      display:flex;flex-direction:column;align-items:center;min-height:100vh;
     }
-    h1 { margin: 0 0 1rem; text-align: center; }
-    p.small { font-size: .875rem; color: var(--text-subtle); max-width: 600px; text-align: center; }
-    form {
-      display: flex;
-      gap: .5rem;
-      width: 100%;
-      max-width: 500px;
-      margin-top: 1rem;
-    }
-    input[type="url"] {
-      flex: 1;
-      padding: .6rem .8rem;
-      font-size: 1rem;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-    }
-    button {
-      padding: .6rem 1rem;
-      font-size: 1rem;
-      border: none;
-      border-radius: var(--radius);
-      background: var(--accent);
-      color: #fff;
-      cursor: pointer;
-      transition: background .2s;
-    }
-    button:hover { background: #1d4ed8; }
-    #results {
-      margin-top: 2rem;
-      width: 100%;
-      max-width: 700px;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      background: #fff;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      overflow: hidden;
-    }
-    th, td {
-      padding: .6rem .5rem;
-      text-align: left;
-      border-bottom: 1px solid var(--border);
-      font-size: .95rem;
-    }
-    th { background: #f9fafb; font-weight: 600; }
-    tr:last-child td { border-bottom: none; }
-    a.download-btn {
-      color: var(--accent);
-      text-decoration: none;
-      font-weight: 600;
-    }
-    .error { color: #b91c1c; }
+    h1{margin:0 0 1rem;text-align:center;}
+    p.small{font-size:.875rem;color:var(--text-subtle);max-width:640px;text-align:center;}
+    form{display:flex;gap:.5rem;width:100%;max-width:520px;margin-top:1rem;}
+    input[type=url]{flex:1;padding:.6rem .8rem;font-size:1rem;border:1px solid var(--border);border-radius:var(--radius);}
+    button{padding:.6rem 1rem;font-size:1rem;border:none;border-radius:var(--radius);background:var(--accent);color:#fff;cursor:pointer;transition:background .2s;}
+    button:hover{background:#1d4ed8;}
+    #results{margin-top:2rem;width:100%;max-width:760px;}
+    table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;}
+    th,td{padding:.6rem .5rem;text-align:left;border-bottom:1px solid var(--border);font-size:.95rem;}
+    th{background:#f9fafb;font-weight:600;}
+    tr:last-child td{border-bottom:none;}
+    a.download-btn{color:var(--accent);text-decoration:none;font-weight:600;}
+    .error{color:#b91c1c;}
+    .muted{color:var(--text-subtle);font-size:.9rem;}
   </style>
 </head>
 <body>
   <h1>YouTube Downloader</h1>
-  <p class="small">Paste a YouTube URL, then pick a quality or choose <em>audio‑only</em> to grab an MP3. Links are generated on‑the‑fly by the open <a href="https://yozora.vercel.app" target="_blank" rel="noopener">Yozora</a> yt‑dl API. <strong>Download responsibly.</strong></p>
+  <p class="small">Paste a YouTube URL then pick a quality or choose <em>audio‑only</em> for an MP3.  The app tries <strong>Yozora</strong> first and, if that fails, automatically falls back to the <strong>Piped</strong> public API.  <br><strong>Download responsibly.</strong></p>
 
   <form id="dl-form">
     <input id="yt-url" type="url" placeholder="https://www.youtube.com/watch?v=dQw4w9WgXcQ" required />
@@ -91,86 +48,89 @@
 
   <div id="results"></div>
 
-  <script>
-    const form = document.getElementById('dl-form');
-    const input = document.getElementById('yt-url');
-    const results = document.getElementById('results');
+<script>
+const form = document.getElementById('dl-form');
+const input = document.getElementById('yt-url');
+const results = document.getElementById('results');
 
-    // Helper: human‑readable file‑size
-    const formatBytes = (bytes = 0) => {
-      if (!bytes) return '—';
-      const k = 1024;
-      const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-      const i = Math.floor(Math.log(bytes) / Math.log(k));
-      return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
-    };
+// Human‑readable size helper
+const formatBytes = (bytes=0)=>{
+  if(!bytes) return '—';
+  const k=1024,sizes=['B','KB','MB','GB','TB'],i=Math.floor(Math.log(bytes)/Math.log(k));
+  return `${(bytes/Math.pow(k,i)).toFixed(1)} ${sizes[i]}`;
+};
 
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const url = input.value.trim();
-      if (!url) return;
+// Extract YT ID (covers youtu.be & embed links)
+function extractId(url){
+  const m = url.match(/(?:v=|\/|^)([0-9A-Za-z_-]{11})(?:[?&].*)?$/);
+  return m?m[1]:null;
+}
 
-      results.innerHTML = '<p>Fetching video info…</p>';
+async function fetchYozora(videoUrl){
+  const res = await fetch(`https://yozora.vercel.app/api/info?query=${encodeURIComponent(videoUrl)}`);
+  if(!res.ok) throw new Error('Yozora API error');
+  const j = await res.json();
+  if(!Array.isArray(j.formats)) throw new Error('Unexpected Yozora payload');
+  return j.formats.map(f=>({
+    type: f.vcodec!== 'none'? 'Video':'Audio',
+    quality: f.vcodec!== 'none'? (f.format_note || `${f.height}p`): `${f.abr||'?'} kbps`,
+    size: f.filesize,
+    ext: f.ext,
+    url: `https://yozora.vercel.app/api/download?url=${encodeURIComponent(videoUrl)}&format=${encodeURIComponent(f.format_id)}`
+  }));
+}
 
-      try {
-        // Step 1: get stream info
-        const infoRes = await fetch(`https://yozora.vercel.app/api/info?query=${encodeURIComponent(url)}`);
-        if (!infoRes.ok) throw new Error('API responded with an error');
-        const data = await infoRes.json();
+async function fetchPiped(videoUrl){
+  const id = extractId(videoUrl);
+  if(!id) throw new Error('Cannot parse video ID');
+  const apiBase = 'https://pipedapi.kavin.rocks'; // You can swap to any public Piped instance
+  const res = await fetch(`${apiBase}/streams/${id}`);
+  if(!res.ok) throw new Error('Piped API error');
+  const j = await res.json();
+  if(!j.videoStreams && !j.audioStreams) throw new Error('Unexpected Piped payload');
+  const all=[...(j.videoStreams||[]),...(j.audioStreams||[])];
+  return all.map(s=>({
+    type: s.videoOnly? 'Video':'Audio',
+    quality: s.quality || (s.bitrate? `${Math.round(s.bitrate/1000)} kbps`: '—'),
+    size: s.size,
+    ext: s.container,
+    url: s.url
+  }));
+}
 
-        // Clear placeholder
-        results.innerHTML = '';
+function renderTable(rows){
+  const table=document.createElement('table');
+  table.innerHTML=`<thead><tr><th>Type</th><th>Quality/Bitrate</th><th>Size</th><th>Ext</th><th></th></tr></thead><tbody></tbody>`;
+  const tbody=table.querySelector('tbody');
+  rows.forEach(r=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td>${r.type}</td><td>${r.quality}</td><td>${formatBytes(r.size)}</td><td>${r.ext}</td><td><a class="download-btn" href="${r.url}" target="_blank" rel="noopener">Download</a></td>`;
+    tbody.appendChild(tr);
+  });
+  return table;
+}
 
-        if (!Array.isArray(data?.formats) || !data.formats.length) {
-          results.innerHTML = '<p class="error">No downloadable formats found for this video.</p>';
-          return;
-        }
-
-        // Build table
-        const table = document.createElement('table');
-        table.innerHTML = `
-          <thead>
-            <tr>
-              <th>Type</th>
-              <th>Quality / Bitrate</th>
-              <th>Size</th>
-              <th>Ext</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        `;
-
-        const tbody = table.querySelector('tbody');
-
-        // Organise: prefer mp4 video + mp3 audio first
-        const sorted = data.formats.sort((a, b) => (b.filesize || 0) - (a.filesize || 0));
-
-        sorted.forEach((f) => {
-          // Skip adaptive formats without direct URL
-          if (!/^https?:\/\/.+/.test(f.url || '')) return;
-          const isVideo = f.vcodec !== 'none';
-          const tr = document.createElement('tr');
-
-          const quality = isVideo ? (f.format_note || `${f.height}p`) : `${f.abr || '?'} kbps`;
-          const dlLink = `https://yozora.vercel.app/api/download?url=${encodeURIComponent(url)}&format=${encodeURIComponent(f.format_id)}`;
-
-          tr.innerHTML = `
-            <td>${isVideo ? 'Video' : 'Audio'}</td>
-            <td>${quality}</td>
-            <td>${formatBytes(f.filesize)}</td>
-            <td>${f.ext}</td>
-            <td><a class="download-btn" href="${dlLink}" target="_blank" rel="noopener">Download</a></td>
-          `;
-          tbody.appendChild(tr);
-        });
-
-        results.appendChild(table);
-      } catch (err) {
-        console.error(err);
-        results.innerHTML = '<p class="error">Failed to retrieve video information. It may be blocked or the API is unreachable.</p>';
-      }
-    });
-  </script>
+form.addEventListener('submit',async e=>{
+  e.preventDefault();
+  const url=input.value.trim();
+  if(!url) return;
+  results.innerHTML='<p class="muted">Fetching video info…</p>';
+  try{
+    let rows = await fetchYozora(url);
+    results.innerHTML='';
+    results.appendChild(renderTable(rows));
+  }catch(err1){
+    console.warn('Yozora failed:',err1);
+    try{
+      let rows = await fetchPiped(url);
+      results.innerHTML='<p class="muted">Primary API failed, using fallback.</p>';
+      results.appendChild(renderTable(rows));
+    }catch(err2){
+      console.error(err2);
+      results.innerHTML='<p class="error">Failed to retrieve video information from both APIs. The service might be unreachable or the URL is invalid.</p>';
+    }
+  }
+});
+</script>
 </body>
 </html>
